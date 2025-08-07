@@ -1,0 +1,608 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    cert-manager.io/disable-validation: "true"
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/warn: "restricted"
+
+---
+# Cert-manager ClusterIssuer for Let's Encrypt
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - dns01:
+        route53:
+          region: us-west-2
+          accessKeyID: ""
+          secretAccessKeySecretRef:
+            name: route53-credentials
+            key: secret-access-key
+        selector:
+          dnsZones:
+          - "example.com"
+          - "*.example.com"
+    - dns01:
+        cloudDNS:
+          project: my-gcp-project
+          serviceAccountSecretRef:
+            name: clouddns-credentials
+            key: key.json
+        selector:
+          dnsZones:
+          - "gcp.example.com"
+    - dns01:
+        azureDNS:
+          clientID: ""
+          clientSecretSecretRef:
+            name: azuredns-credentials
+            key: client-secret
+          subscriptionID: ""
+          tenantID: ""
+          resourceGroupName: dns-rg
+        selector:
+          dnsZones:
+          - "azure.example.com"
+
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@example.com
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    solvers:
+    - dns01:
+        route53:
+          region: us-west-2
+          accessKeyID: ""
+          secretAccessKeySecretRef:
+            name: route53-credentials
+            key: secret-access-key
+
+---
+# Private CA ClusterIssuer for internal services
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: private-ca-issuer
+spec:
+  ca:
+    secretName: private-ca-secret
+
+---
+# Vault ClusterIssuer for dynamic certificate generation
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: vault-issuer
+spec:
+  vault:
+    server: https://vault.example.com
+    path: pki/sign/kubernetes
+    auth:
+      kubernetes:
+        mountPath: /v1/auth/kubernetes
+        role: cert-manager
+        secretRef:
+          name: vault-token
+          key: token
+
+---
+# Certificate for API Gateway
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: api-gateway-cert
+  namespace: default
+spec:
+  secretName: api-gateway-tls
+  duration: 2160h # 90 days
+  renewBefore: 360h # 15 days
+  subject:
+    organizations:
+      - Multi-Cloud Platform
+  commonName: api.example.com
+  isCA: false
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - client auth
+  dnsNames:
+    - api.example.com
+    - api-staging.example.com
+    - api-dev.example.com
+  ipAddresses:
+    - 192.168.1.100
+  uris:
+    - https://api.example.com
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+    group: cert-manager.io
+  keystores:
+    jks:
+      create: true
+      passwordSecretRef:
+        name: api-gateway-keystore
+        key: password
+    pkcs12:
+      create: true
+      passwordSecretRef:
+        name: api-gateway-keystore
+        key: password
+
+---
+# Certificate for service mesh (Istio)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: istio-root-ca
+  namespace: istio-system
+spec:
+  secretName: cacerts
+  duration: 87600h # 10 years
+  renewBefore: 8760h # 1 year
+  isCA: true
+  commonName: Multi-Cloud Mesh Root CA
+  subject:
+    organizationalUnits:
+      - Security
+    organizations:
+      - Multi-Cloud Platform
+    countries:
+      - US
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - cert sign
+    - crl sign
+    - digital signature
+    - key encipherment
+  issuerRef:
+    name: private-ca-issuer
+    kind: ClusterIssuer
+
+---
+# Certificate for database TLS
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: database-server-cert
+  namespace: default
+spec:
+  secretName: database-server-tls
+  duration: 2160h # 90 days
+  renewBefore: 720h # 30 days
+  subject:
+    organizations:
+      - Multi-Cloud Platform
+  commonName: postgres.example.com
+  isCA: false
+  privateKey:
+    algorithm: RSA
+    size: 4096
+  usages:
+    - server auth
+    - client auth
+  dnsNames:
+    - postgres.default.svc.cluster.local
+    - postgres-primary.default.svc.cluster.local
+    - postgres-replica.default.svc.cluster.local
+  issuerRef:
+    name: private-ca-issuer
+    kind: ClusterIssuer
+
+---
+# Certificate for monitoring stack
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: monitoring-cert
+  namespace: monitoring
+spec:
+  secretName: monitoring-tls
+  duration: 2160h # 90 days
+  renewBefore: 360h # 15 days
+  subject:
+    organizations:
+      - Multi-Cloud Platform
+  commonName: monitoring.example.com
+  isCA: false
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - server auth
+  dnsNames:
+    - prometheus.monitoring.svc.cluster.local
+    - grafana.monitoring.svc.cluster.local
+    - alertmanager.monitoring.svc.cluster.local
+  issuerRef:
+    name: vault-issuer
+    kind: ClusterIssuer
+
+---
+# CertificateRequest for emergency certificates
+apiVersion: cert-manager.io/v1
+kind: CertificateRequest
+metadata:
+  name: emergency-cert-request
+  namespace: default
+spec:
+  duration: 24h # Short-lived emergency cert
+  isCA: false
+  request: |
+    LS0tLS1CRUdJTi... # Base64 encoded CSR
+  usages:
+    - server auth
+  issuerRef:
+    name: vault-issuer
+    kind: ClusterIssuer
+
+---
+# Custom resource for certificate monitoring
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cert-monitor-config
+  namespace: cert-manager
+data:
+  config.yaml: |
+    monitoring:
+      enabled: true
+      interval: 300s
+      alerting:
+        webhook_url: "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+        email:
+          smtp_server: "smtp.example.com"
+          smtp_port: 587
+          from: "cert-monitor@example.com"
+          to: ["admin@example.com"]
+    
+    certificates:
+      check_interval: 3600s
+      expiry_warning_days: 30
+      renewal_warning_days: 7
+      
+    metrics:
+      enabled: true
+      port: 8080
+      path: /metrics
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-monitor
+  namespace: cert-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cert-monitor
+  template:
+    metadata:
+      labels:
+        app: cert-monitor
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      serviceAccountName: cert-monitor
+      containers:
+      - name: cert-monitor
+        image: jetstack/cert-manager-webhook:v1.13.0
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        command:
+        - /manager
+        args:
+        - --config=/etc/config/config.yaml
+        - --metrics-bind-address=0.0.0.0:8080
+        - --leader-elect=true
+        ports:
+        - containerPort: 8080
+          name: metrics
+        - containerPort: 9443
+          name: webhook
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+        - name: certs
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+        - name: tmp
+          mountPath: /tmp
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: cert-monitor-config
+      - name: certs
+        secret:
+          secretName: cert-monitor-certs
+      - name: tmp
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-monitor
+  namespace: cert-manager
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cert-monitor
+rules:
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates", "certificaterequests", "issuers", "clusterissuers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets", "events"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-monitor
+subjects:
+- kind: ServiceAccount
+  name: cert-monitor
+  namespace: cert-manager
+
+---
+# CronJob for certificate rotation and cleanup
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cert-rotation-job
+  namespace: cert-manager
+spec:
+  schedule: "0 3 * * *" # Daily at 3 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            fsGroup: 65534
+          serviceAccountName: cert-rotation
+          containers:
+          - name: cert-rotator
+            image: bitnami/kubectl:1.28
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Starting certificate rotation check..."
+              
+              # Check certificates expiring in next 30 days
+              kubectl get certificates --all-namespaces -o json | \
+              jq -r '.items[] | select(.status.notAfter != null) | 
+                     select(((.status.notAfter | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) - now) < (30 * 24 * 3600)) | 
+                     "\(.metadata.namespace)/\(.metadata.name)"' | \
+              while read cert; do
+                echo "Certificate $cert expires soon, triggering renewal..."
+                namespace=$(echo $cert | cut -d'/' -f1)
+                name=$(echo $cert | cut -d'/' -f2)
+                kubectl annotate certificate $name -n $namespace cert-manager.io/issue-temporary-certificate=true --overwrite
+              done
+              
+              # Clean up old certificate secrets
+              kubectl get secrets --all-namespaces -l cert-manager.io/certificate-name \
+                -o json | jq -r '.items[] | select(.metadata.creationTimestamp != null) | 
+                         select((now - (.metadata.creationTimestamp | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime)) > (90 * 24 * 3600)) |
+                         "\(.metadata.namespace)/\(.metadata.name)"' | \
+              while read secret; do
+                namespace=$(echo $secret | cut -d'/' -f1)
+                name=$(echo $secret | cut -d'/' -f2)
+                echo "Cleaning up old certificate secret: $namespace/$name"
+                kubectl delete secret $name -n $namespace
+              done
+              
+              echo "Certificate rotation check completed"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir: {}
+          restartPolicy: OnFailure
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-rotation
+  namespace: cert-manager
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cert-rotation
+rules:
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates", "certificaterequests"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-rotation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-rotation
+subjects:
+- kind: ServiceAccount
+  name: cert-rotation
+  namespace: cert-manager
+
+---
+# Certificate authority secret (for private CA)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: private-ca-secret
+  namespace: cert-manager
+type: Opaque
+data:
+  tls.crt: |
+    LS0tLS1CRUdJTi... # Base64 encoded CA certificate
+  tls.key: |
+    LS0tLS1CRUdJTi... # Base64 encoded CA private key
+
+---
+# DNS credentials for certificate validation
+apiVersion: v1
+kind: Secret
+metadata:
+  name: route53-credentials
+  namespace: cert-manager
+type: Opaque
+data:
+  secret-access-key: |
+    QUtJQUlPU0ZPRE5ON... # Base64 encoded AWS secret access key
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clouddns-credentials
+  namespace: cert-manager
+type: Opaque
+data:
+  key.json: |
+    ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIs... # Base64 encoded GCP service account JSON
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: azuredns-credentials
+  namespace: cert-manager
+type: Opaque
+data:
+  client-secret: |
+    WW91ci1BenVyZS1DbGllbnQtU2VjcmV0... # Base64 encoded Azure client secret
+
+---
+# Monitoring and alerting for certificates
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+  endpoints:
+  - port: tcp-prometheus-servicemonitor
+    interval: 60s
+    path: /metrics
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cert-manager-alerts
+  namespace: cert-manager
+spec:
+  groups:
+  - name: cert-manager
+    rules:
+    - alert: CertificateExpiryWarning
+      expr: certmanager_certificate_expiration_timestamp_seconds - time() < 604800 # 7 days
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires soon"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires in less than 7 days"
+    
+    - alert: CertificateExpiryCritical
+      expr: certmanager_certificate_expiration_timestamp_seconds - time() < 86400 # 1 day
+      for: 1h
+      labels:
+        severity: critical
+      annotations:
+        summary: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires very soon"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires in less than 24 hours"
+    
+    - alert: CertificateRenewalFailed
+      expr: certmanager_certificate_ready_status == 0
+      for: 1h
+      labels:
+        severity: critical
+      annotations:
+        summary: "Certificate {{ $labels.name }} renewal failed"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} renewal has failed"

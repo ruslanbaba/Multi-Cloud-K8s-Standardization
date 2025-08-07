@@ -1,0 +1,733 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zero-trust-system
+  labels:
+    istio-injection: enabled
+    security.istio.io/tlsMode: STRICT
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/warn: "restricted"
+
+---
+# Istio Service Mesh Configuration for Zero Trust
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: istio-system
+spec:
+  # Default deny all policy - must explicitly allow traffic
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/default/sa/frontend"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/api/*"]
+    when:
+    - key: request.auth.claims[iss]
+      values: ["https://kubernetes.default.svc.cluster.local"]
+    - key: request.auth.claims[sub]
+      values: ["system:serviceaccount:default:frontend"]
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-backend-to-database
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: database
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/default/sa/backend"]
+    to:
+    - operation:
+        ports: ["5432"]
+    when:
+    - key: source.certificate_fingerprint
+      values: ["sha256:..."] # Certificate fingerprint validation
+
+---
+# Request Authentication for JWT validation
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  jwtRules:
+  - issuer: "https://auth.example.com"
+    jwksUri: "https://auth.example.com/.well-known/jwks.json"
+    audiences:
+    - "api.example.com"
+    forwardOriginalToken: true
+  - issuer: "https://kubernetes.default.svc.cluster.local"
+    jwksUri: "https://kubernetes.default.svc.cluster.local/openid/v1/jwks"
+    audiences:
+    - "kubernetes.default.svc"
+
+---
+# SPIFFE/SPIRE Identity Management
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-server
+  namespace: zero-trust-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spire-server
+  template:
+    metadata:
+      labels:
+        app: spire-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      serviceAccountName: spire-server
+      containers:
+      - name: spire-server
+        image: ghcr.io/spiffe/spire-server:1.7.2
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        args:
+        - -config
+        - /run/spire/config/server.conf
+        ports:
+        - containerPort: 8081
+          name: grpc
+        volumeMounts:
+        - name: spire-config
+          mountPath: /run/spire/config
+          readOnly: true
+        - name: spire-data
+          mountPath: /run/spire/data
+        - name: spire-registration-socket
+          mountPath: /run/spire/sockets
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        livenessProbe:
+          exec:
+            command:
+            - /opt/spire/bin/spire-server
+            - healthcheck
+            - -registrationUDSPath
+            - /run/spire/sockets/registration.sock
+          initialDelaySeconds: 15
+          periodSeconds: 60
+        readinessProbe:
+          exec:
+            command:
+            - /opt/spire/bin/spire-server
+            - healthcheck
+            - -registrationUDSPath
+            - /run/spire/sockets/registration.sock
+            - -shallow
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: spire-config
+        configMap:
+          name: spire-server-config
+      - name: spire-data
+        persistentVolumeClaim:
+          claimName: spire-data
+      - name: spire-registration-socket
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: spire-agent
+  namespace: zero-trust-system
+spec:
+  selector:
+    matchLabels:
+      app: spire-agent
+  template:
+    metadata:
+      labels:
+        app: spire-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 0  # Required for node attestation
+        fsGroup: 0
+      hostNetwork: true
+      hostPID: true
+      serviceAccountName: spire-agent
+      initContainers:
+      - name: init
+        image: ghcr.io/spiffe/spire-agent:1.7.2
+        command: ['sh', '-c', 'cp -r /opt/spire/. /spire/']
+        volumeMounts:
+        - name: spire-agent
+          mountPath: /spire
+      containers:
+      - name: spire-agent
+        image: ghcr.io/spiffe/spire-agent:1.7.2
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config
+        - /run/spire/config/agent.conf
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: spire-config
+          mountPath: /run/spire/config
+          readOnly: true
+        - name: spire-bundle
+          mountPath: /run/spire/bundle
+        - name: spire-registration-socket
+          mountPath: /run/spire/sockets
+        - name: spire-agent-socket
+          mountPath: /run/spire/agent-sockets
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: cgroup
+          mountPath: /host/sys/fs/cgroup
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command:
+            - /opt/spire/bin/spire-agent
+            - healthcheck
+            - -socketPath
+            - /run/spire/agent-sockets/agent.sock
+          initialDelaySeconds: 15
+          periodSeconds: 60
+        readinessProbe:
+          exec:
+            command:
+            - /opt/spire/bin/spire-agent
+            - healthcheck
+            - -socketPath
+            - /run/spire/agent-sockets/agent.sock
+            - -shallow
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: spire-config
+        configMap:
+          name: spire-agent-config
+      - name: spire-bundle
+        configMap:
+          name: spire-bundle
+      - name: spire-registration-socket
+        hostPath:
+          path: /run/spire/sockets
+          type: DirectoryOrCreate
+      - name: spire-agent-socket
+        hostPath:
+          path: /run/spire/agent-sockets
+          type: DirectoryOrCreate
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+      - name: spire-agent
+        emptyDir: {}
+
+---
+# SPIRE Server Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-server-config
+  namespace: zero-trust-system
+data:
+  server.conf: |
+    server {
+      bind_address = "0.0.0.0"
+      bind_port = "8081"
+      trust_domain = "example.org"
+      data_dir = "/run/spire/data"
+      log_level = "INFO"
+      log_format = "text"
+      
+      ca_subject = {
+        country = ["US"],
+        organization = ["Multi-Cloud Platform"],
+        common_name = "SPIRE Server CA",
+      }
+      
+      default_svid_ttl = "1h"
+      ca_ttl = "72h"
+      
+      registration_uds_path = "/run/spire/sockets/registration.sock"
+    }
+    
+    plugins {
+      DataStore "sql" {
+        plugin_data {
+          database_type = "sqlite3"
+          connection_string = "/run/spire/data/datastore.sqlite3"
+        }
+      }
+      
+      NodeAttestor "k8s_sat" {
+        plugin_data {
+          clusters = {
+            "multi-cloud-k8s" = {
+              service_account_allow_list = ["zero-trust-system:spire-agent"]
+            }
+          }
+        }
+      }
+      
+      KeyManager "disk" {
+        plugin_data {
+          keys_path = "/run/spire/data/keys.json"
+        }
+      }
+      
+      Notifier "k8sbundle" {
+        plugin_data {
+          namespace = "zero-trust-system"
+          config_map = "spire-bundle"
+        }
+      }
+    }
+    
+    health_checks {
+      listener_enabled = true
+      bind_address = "0.0.0.0"
+      bind_port = "8080"
+      live_path = "/live"
+      ready_path = "/ready"
+    }
+
+---
+# SPIRE Agent Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-agent-config
+  namespace: zero-trust-system
+data:
+  agent.conf: |
+    agent {
+      data_dir = "/run/spire/data"
+      log_level = "INFO"
+      log_format = "text"
+      trust_domain = "example.org"
+      server_address = "spire-server"
+      server_port = "8081"
+      socket_path = "/run/spire/agent-sockets/agent.sock"
+      trust_bundle_path = "/run/spire/bundle/bundle.crt"
+      
+      # SDS configuration for Envoy
+      sds {
+        default_svid_name = "spiffe://example.org/ns/default/sa/default"
+        default_bundle_name = "ROOTCA"
+        disable_spiffe_cert_validation = false
+      }
+    }
+    
+    plugins {
+      NodeAttestor "k8s_sat" {
+        plugin_data {
+          cluster = "multi-cloud-k8s"
+        }
+      }
+      
+      KeyManager "memory" {
+        plugin_data = {}
+      }
+      
+      WorkloadAttestor "k8s" {
+        plugin_data {
+          skip_kubelet_verification = true
+        }
+      }
+    }
+    
+    health_checks {
+      listener_enabled = true
+      bind_address = "0.0.0.0"
+      bind_port = "8080"
+      live_path = "/live"
+      ready_path = "/ready"
+    }
+
+---
+# Service Account and RBAC for SPIRE
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-server
+  namespace: zero-trust-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-agent
+  namespace: zero-trust-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "get", "list", "patch", "watch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-agent
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-server
+subjects:
+- kind: ServiceAccount
+  name: spire-server
+  namespace: zero-trust-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-agent
+subjects:
+- kind: ServiceAccount
+  name: spire-agent
+  namespace: zero-trust-system
+
+---
+# Zero Trust Network Policies
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zero-trust-default-deny
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-authenticated-traffic
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      security.istio.io/tlsMode: istio
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          security.istio.io/tlsMode: istio
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 8443
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          security.istio.io/tlsMode: istio
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 8443
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443  # HTTPS outbound
+    - protocol: UDP
+      port: 53   # DNS
+
+---
+# Workload Identity and Trust Verification
+apiVersion: security.istio.io/v1beta1
+kind: WorkloadSelector
+metadata:
+  name: frontend-workload
+  namespace: default
+spec:
+  workloadSelector:
+    matchLabels:
+      app: frontend
+  rules:
+  - principals: ["cluster.local/ns/default/sa/frontend"]
+    notPrincipals: []
+    requestPrincipals: []
+    notRequestPrincipals: []
+
+---
+# Advanced Security Policies
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-valid-identity
+  namespace: istio-system
+spec:
+  rules:
+  - from:
+    - source:
+        principals: ["*"]
+    when:
+    - key: source.certificate_fingerprint
+      notValues: ["*"]  # Require valid certificate
+    - key: source.namespace
+      values: ["default", "production", "staging"]
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: time-based-access
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: sensitive-service
+  rules:
+  - to:
+    - operation:
+        methods: ["GET", "POST"]
+    when:
+    - key: request.time
+      values: ["09:00", "17:00"]  # Business hours only
+
+---
+# Continuous Security Monitoring
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-monitor
+  namespace: zero-trust-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: security-monitor
+  template:
+    metadata:
+      labels:
+        app: security-monitor
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      serviceAccountName: security-monitor
+      containers:
+      - name: monitor
+        image: prom/prometheus:v2.45.0
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        args:
+        - --config.file=/etc/prometheus/prometheus.yml
+        - --storage.tsdb.path=/prometheus/
+        - --web.console.libraries=/etc/prometheus/console_libraries
+        - --web.console.templates=/etc/prometheus/consoles
+        - --web.enable-lifecycle
+        - --web.enable-admin-api
+        - --storage.tsdb.retention.time=30d
+        ports:
+        - containerPort: 9090
+          name: web
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        - name: storage
+          mountPath: /prometheus
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+      volumes:
+      - name: config
+        configMap:
+          name: security-monitor-config
+      - name: storage
+        persistentVolumeClaim:
+          claimName: security-monitor-storage
+      - name: tmp
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: security-monitor
+  namespace: zero-trust-system
+
+---
+# Trust Verification and Attestation
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trust-verification
+  namespace: zero-trust-system
+spec:
+  schedule: "*/5 * * * *"  # Every 5 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            fsGroup: 65534
+          serviceAccountName: trust-verifier
+          containers:
+          - name: verifier
+            image: curlimages/curl:8.1.2
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting trust verification..."
+              
+              # Verify SPIRE server health
+              curl -f http://spire-server:8080/ready || exit 1
+              
+              # Check certificate expiration
+              kubectl get certificates --all-namespaces -o json | \
+              jq -r '.items[] | select(.status.notAfter != null) | 
+                     select(((.status.notAfter | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) - now) < 86400) | 
+                     .metadata.name' | \
+              while read cert; do
+                echo "ALERT: Certificate $cert expires within 24 hours"
+              done
+              
+              # Verify workload identities
+              kubectl get pods --all-namespaces -l security.istio.io/tlsMode=istio \
+                -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' | \
+              while read pod; do
+                namespace=$(echo $pod | cut -d'/' -f1)
+                name=$(echo $pod | cut -d'/' -f2)
+                echo "Verifying identity for pod $namespace/$name"
+              done
+              
+              echo "Trust verification completed"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir: {}
+          restartPolicy: OnFailure
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trust-verifier
+  namespace: zero-trust-system

@@ -1,0 +1,468 @@
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: securitycontext
+spec:
+  crd:
+    spec:
+      names:
+        kind: SecurityContext
+      validation:
+        type: object
+        properties:
+          runAsNonRoot:
+            type: boolean
+          readOnlyRootFilesystem:
+            type: boolean
+          allowPrivilegeEscalation:
+            type: boolean
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package securitycontext
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.securityContext.runAsNonRoot
+          msg := sprintf("Container %v must run as non-root user", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.securityContext.readOnlyRootFilesystem
+          msg := sprintf("Container %v must have read-only root filesystem", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          container.securityContext.allowPrivilegeEscalation
+          msg := sprintf("Container %v must not allow privilege escalation", [container.name])
+        }
+
+---
+apiVersion: config.gatekeeper.sh/v1alpha1
+kind: SecurityContext
+metadata:
+  name: enforce-security-context
+spec:
+  match:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet", "DaemonSet"]
+      namespaces: ["default", "production", "staging"]
+  parameters:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+
+---
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: imagepolicy
+spec:
+  crd:
+    spec:
+      names:
+        kind: ImagePolicy
+      validation:
+        type: object
+        properties:
+          allowedRegistries:
+            type: array
+            items:
+              type: string
+          requireDigest:
+            type: boolean
+          blockedImages:
+            type: array
+            items:
+              type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package imagepolicy
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not starts_with(container.image, input.parameters.allowedRegistries[_])
+          msg := sprintf("Container image %v is not from allowed registry", [container.image])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          input.parameters.requireDigest
+          not contains(container.image, "@sha256:")
+          msg := sprintf("Container image %v must specify digest", [container.image])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          container.image == input.parameters.blockedImages[_]
+          msg := sprintf("Container image %v is blocked", [container.image])
+        }
+
+---
+apiVersion: config.gatekeeper.sh/v1alpha1
+kind: ImagePolicy
+metadata:
+  name: allowed-registries
+spec:
+  match:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet", "DaemonSet"]
+  parameters:
+    allowedRegistries:
+      - "ghcr.io/ruslanbaba/"
+      - "docker.io/library/"
+      - "registry.k8s.io/"
+      - "gcr.io/distroless/"
+    requireDigest: true
+    blockedImages:
+      - "alpine:latest"
+      - "ubuntu:latest"
+      - "centos:latest"
+
+---
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: networkpolicy
+spec:
+  crd:
+    spec:
+      names:
+        kind: NetworkPolicy
+      validation:
+        type: object
+        properties:
+          requireNetworkPolicy:
+            type: boolean
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package networkpolicy
+
+        violation[{"msg": msg}] {
+          input.parameters.requireNetworkPolicy
+          namespace := input.review.object.metadata.namespace
+          not has_network_policy(namespace)
+          msg := sprintf("Namespace %v must have a NetworkPolicy", [namespace])
+        }
+
+        has_network_policy(ns) {
+          data.inventory.namespace[ns]["networking.k8s.io/v1"]["NetworkPolicy"][_]
+        }
+
+---
+apiVersion: config.gatekeeper.sh/v1alpha1
+kind: NetworkPolicy
+metadata:
+  name: require-network-policy
+spec:
+  match:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet"]
+  parameters:
+    requireNetworkPolicy: true
+
+---
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: resourcelimits
+spec:
+  crd:
+    spec:
+      names:
+        kind: ResourceLimits
+      validation:
+        type: object
+        properties:
+          cpu:
+            type: string
+          memory:
+            type: string
+          requireLimits:
+            type: boolean
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package resourcelimits
+
+        violation[{"msg": msg}] {
+          input.parameters.requireLimits
+          container := input.review.object.spec.containers[_]
+          not container.resources.limits
+          msg := sprintf("Container %v must specify resource limits", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          input.parameters.requireLimits
+          container := input.review.object.spec.containers[_]
+          not container.resources.requests
+          msg := sprintf("Container %v must specify resource requests", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          cpu_limit := container.resources.limits.cpu
+          cpu_limit_num := to_number(trim_suffix(cpu_limit, "m"))
+          input.parameters.cpu
+          max_cpu := to_number(trim_suffix(input.parameters.cpu, "m"))
+          cpu_limit_num > max_cpu
+          msg := sprintf("Container %v CPU limit %v exceeds maximum %v", [container.name, cpu_limit, input.parameters.cpu])
+        }
+
+---
+apiVersion: config.gatekeeper.sh/v1alpha1
+kind: ResourceLimits
+metadata:
+  name: container-resource-limits
+spec:
+  match:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet", "DaemonSet"]
+  parameters:
+    requireLimits: true
+    cpu: "2000m"
+    memory: "4Gi"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admission-control-config
+  namespace: kube-system
+data:
+  admission-control.yaml: |
+    plugins:
+      - name: PodSecurityPolicy
+        configuration:
+          apiVersion: podsecuritypolicy.admission.k8s.io/v1beta1
+          kind: PodSecurityPolicyConfiguration
+          defaultPolicy: restricted
+      
+      - name: SecurityContextDeny
+        configuration:
+          apiVersion: securitycontextdeny.admission.k8s.io/v1alpha1
+          kind: SecurityContextDenyConfiguration
+          defaultSecurityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      
+      - name: ImagePolicyWebhook
+        configuration:
+          imagePolicy:
+            kubeConfigFile: /etc/webhook/kubeconfig
+            allowTTL: 50
+            denyTTL: 50
+            retryBackoff: 500
+            defaultAllow: false
+
+---
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: restricted-psp
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: 'runtime/default'
+    seccomp.security.alpha.kubernetes.io/defaultProfileName: 'runtime/default'
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  volumes:
+    - 'configMap'
+    - 'emptyDir'
+    - 'projected'
+    - 'secret'
+    - 'downwardAPI'
+    - 'persistentVolumeClaim'
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  seLinux:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'RunAsAny'
+  readOnlyRootFilesystem: true
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: psp:restricted
+rules:
+- apiGroups: ['policy']
+  resources: ['podsecuritypolicies']
+  verbs: ['use']
+  resourceNames: ['restricted-psp']
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: psp:restricted:binding
+roleRef:
+  kind: ClusterRole
+  name: psp:restricted
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: Group
+  name: system:serviceaccounts
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audit-policy
+  namespace: kube-system
+data:
+  audit-policy.yaml: |
+    apiVersion: audit.k8s.io/v1
+    kind: Policy
+    rules:
+    # Log security-related events
+    - level: Request
+      omitStages: ["RequestReceived"]
+      resources:
+      - group: ""
+        resources: ["pods", "services", "secrets"]
+      - group: "apps"
+        resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+      - group: "rbac.authorization.k8s.io"
+        resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+      namespaces: ["default", "kube-system", "production", "staging"]
+    
+    # Log all security policy violations
+    - level: RequestResponse
+      omitStages: ["RequestReceived"]
+      resources:
+      - group: "policy"
+        resources: ["podsecuritypolicies"]
+      - group: "networking.k8s.io"
+        resources: ["networkpolicies"]
+    
+    # Log privileged operations
+    - level: RequestResponse
+      omitStages: ["RequestReceived"]
+      users: ["system:admin", "admin"]
+      
+    # Log failed requests
+    - level: Request
+      omitStages: ["RequestReceived"]
+      namespaceSelector:
+        matchLabels:
+          audit: "true"
+      annotations:
+        audit.alpha.kubernetes.io/level: "request"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-bench
+  namespace: security-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kube-bench
+  template:
+    metadata:
+      labels:
+        app: kube-bench
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: kube-bench
+        image: aquasec/kube-bench:v0.6.15
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        command: ["kube-bench"]
+        args: ["run", "--targets", "node,policies,managedservices"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: config
+          mountPath: /opt/kube-bench/cfg
+        - name: results
+          mountPath: /tmp/results
+      volumes:
+      - name: config
+        configMap:
+          name: kube-bench-config
+      - name: results
+        emptyDir: {}
+      restartPolicy: Always
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: security-scan
+  namespace: security-system
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            fsGroup: 65534
+          containers:
+          - name: security-scanner
+            image: aquasec/trivy:0.44.1
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            command:
+            - sh
+            - -c
+            - |
+              # Scan cluster for vulnerabilities
+              trivy k8s --report summary cluster
+              
+              # Scan specific namespaces
+              trivy k8s --report summary --include-namespaces default,production,staging all
+              
+              # Generate compliance report
+              trivy k8s --compliance k8s-cis --report summary cluster
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: 1000m
+                memory: 2Gi
+            volumeMounts:
+            - name: cache
+              mountPath: /tmp/trivy-cache
+          volumes:
+          - name: cache
+            emptyDir: {}
+          restartPolicy: OnFailure
