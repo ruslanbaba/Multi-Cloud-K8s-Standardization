@@ -1,0 +1,12 @@
+# OPA Gatekeeper policy example for Kubernetes governance
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredLabels
+metadata:
+  name: require-team-label
+spec:
+  match:
+    kinds:
+      - apiGroups: ["*"]
+        kinds: ["Pod"]
+  parameters:
+    labels: ["team"]

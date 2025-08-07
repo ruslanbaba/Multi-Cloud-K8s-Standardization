@@ -1,0 +1,25 @@
+apiVersion: telepresence.io/v2
+kind: Intercept
+metadata:
+  name: development-intercept
+spec:
+  workload:
+    name: app-deployment
+    port: 8080
+  localPort: 8080
+  previewURL:
+    enabled: true
+  
+---
+apiVersion: getambassador.io/v3alpha1
+kind: Mapping
+metadata:
+  name: dev-mapping
+spec:
+  hostname: "*"
+  prefix: /dev/
+  service: telepresence-proxy
+  timeout_ms: 30000
+  retry_policy:
+    retry_on: "5xx"
+    num_retries: 3

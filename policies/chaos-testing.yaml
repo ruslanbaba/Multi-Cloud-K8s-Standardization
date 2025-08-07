@@ -1,0 +1,31 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-failure-test
+spec:
+  action: pod-failure
+  mode: one
+  duration: "30s"
+  selector:
+    namespaces:
+      - app-namespace
+    labelSelectors:
+      "app": "target-app"
+  scheduler:
+    cron: "@every 30m"
+
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-latency-test
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces:
+      - app-namespace
+  delay:
+    latency: "100ms"
+    correlation: "100"
+    jitter: "0ms"

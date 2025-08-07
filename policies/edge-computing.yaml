@@ -1,0 +1,38 @@
+apiVersion: k3s.io/v1alpha1
+kind: EdgeCluster
+metadata:
+  name: edge-deployment
+spec:
+  nodes:
+    - name: edge-1
+      role: server
+      config:
+        kubernetes-version: v1.25.0
+    - name: edge-2
+      role: agent
+      
+---
+apiVersion: submariner.io/v1alpha1
+kind: Broker
+metadata:
+  name: edge-broker
+spec:
+  globalnetEnabled: true
+  
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: edge-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: MUTUAL
+    hosts:
+    - "*.edge.example.com"

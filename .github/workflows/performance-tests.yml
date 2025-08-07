@@ -1,0 +1,57 @@
+name: Performance Tests
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight
+  workflow_dispatch:      # Allow manual triggers
+  push:
+    branches:
+      - main
+    paths:
+      - 'portal/**'
+      - 'tests/performance/**'
+
+jobs:
+  performance-test:
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install k6
+        run: |
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run Performance Tests
+        env:
+          API_URL: ${{ secrets.STAGING_API_URL }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          USERNAME: ${{ secrets.TEST_USERNAME }}
+          PASSWORD: ${{ secrets.TEST_PASSWORD }}
+        run: |
+          k6 run tests/performance/load-test.js
+
+      - name: Upload Performance Test Results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: k6-results
+          path: k6-results.json
+
+      - name: Send Alert on Failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#FF0000'
+          SLACK_MESSAGE: 'Performance tests failed! Check the results at ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          SLACK_TITLE: 'Performance Test Results'

@@ -1,0 +1,35 @@
+apiVersion: kubeflow.org/v1
+kind: TFJob
+metadata:
+  name: ml-training-pipeline
+spec:
+  tfReplicaSpecs:
+    Worker:
+      replicas: 3
+      template:
+        spec:
+          containers:
+          - name: tensorflow
+            image: tensorflow/tensorflow:latest-gpu
+            resources:
+              limits:
+                nvidia.com/gpu: 1
+            env:
+            - name: MODEL_DIR
+              value: "gs://my-bucket/models"
+            
+---
+apiVersion: serving.kubeflow.org/v1beta1
+kind: InferenceService
+metadata:
+  name: model-predictor
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 5
+    tensorflow:
+      storageUri: "gs://my-bucket/models/saved_model"
+      resources:
+        limits:
+          memory: "2Gi"
+          nvidia.com/gpu: 1

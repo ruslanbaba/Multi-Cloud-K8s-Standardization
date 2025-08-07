@@ -1,0 +1,62 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: integration-testing
+spec:
+  entrypoint: integration-tests
+  templates:
+  - name: integration-tests
+    steps:
+    - - name: unit-tests
+        template: run-tests
+        arguments:
+          parameters:
+          - name: test-suite
+            value: "unit"
+    - - name: integration-tests
+        template: run-tests
+        arguments:
+          parameters:
+          - name: test-suite
+            value: "integration"
+    - - name: performance-tests
+        template: run-tests
+        arguments:
+          parameters:
+          - name: test-suite
+            value: "performance"
+
+---
+apiVersion: k6.io/v1alpha1
+kind: K6
+metadata:
+  name: load-test
+spec:
+  script:
+    configMap:
+      name: load-test-script
+  runner:
+    image: loadimpact/k6:latest
+    resources:
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+  parallelism: 5
+  
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-delay
+spec:
+  action: delay
+  mode: one
+  selector:
+    namespaces:
+      - default
+    labelSelectors:
+      "app": "web"
+  delay:
+    latency: "100ms"
+    correlation: "100"
+    jitter: "0ms"

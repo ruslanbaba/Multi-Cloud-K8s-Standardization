@@ -1,0 +1,43 @@
+apiVersion: kubecost.com/v1alpha1
+kind: CostOptimization
+metadata:
+  name: cost-optimization
+spec:
+  filters:
+    namespaces:
+      - default
+      - prod
+  alerts:
+    - type: SpendingAnomaly
+      threshold: 20
+      window: 24h
+    - type: ResourceUtilization
+      threshold: 30
+      metric: cpu
+  recommendations:
+    enabled: true
+    types:
+      - rightsize
+      - spot
+      - autoscaling
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cost-optimized
+value: 1000
+globalDefault: false
+description: "Workloads that can be interrupted for cost optimization"
+
+---
+apiVersion: policy/v1
+kind: ResourceQuota
+metadata:
+  name: team-budget-quota
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    count/pods: "20"
+    count/services: "10"

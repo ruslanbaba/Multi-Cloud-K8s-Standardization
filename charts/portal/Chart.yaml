@@ -1,0 +1,6 @@
+apiVersion: v2
+name: self-service-portal
+description: Self-service portal for Multi-Cloud K8s deployments
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -1,0 +1,267 @@
+openapi: 3.0.3
+info:
+  title: Multi-Cloud K8s Portal API
+  description: API for managing multi-cloud Kubernetes deployments
+  version: 1.0.0
+  contact:
+    name: Support Team
+    email: support@example.com
+
+servers:
+  - url: https://portal-api.example.com/v1
+    description: Production server
+  - url: https://staging-portal-api.example.com/v1
+    description: Staging server
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Cluster:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        provider:
+          type: string
+          enum: [aws, gcp, azure]
+        region:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+          enum: [creating, running, updating, error, deleting]
+        nodeCount:
+          type: integer
+          minimum: 1
+        created:
+          type: string
+          format: date-time
+
+    Deployment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        clusterId:
+          type: string
+          format: uuid
+        namespace:
+          type: string
+        template:
+          type: string
+        replicas:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [pending, running, failed, scaling, updating]
+        created:
+          type: string
+          format: date-time
+
+    Template:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        manifest:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: true
+
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+paths:
+  /clusters:
+    get:
+      summary: List all clusters
+      operationId: listClusters
+      parameters:
+        - name: provider
+          in: query
+          schema:
+            type: string
+            enum: [aws, gcp, azure]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [creating, running, updating, error, deleting]
+      responses:
+        '200':
+          description: List of clusters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cluster'
+    post:
+      summary: Create a new cluster
+      operationId: createCluster
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - provider
+                - region
+              properties:
+                name:
+                  type: string
+                provider:
+                  type: string
+                  enum: [aws, gcp, azure]
+                region:
+                  type: string
+                nodeCount:
+                  type: integer
+                  minimum: 1
+                  default: 3
+                version:
+                  type: string
+      responses:
+        '201':
+          description: Cluster created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+
+  /deployments:
+    get:
+      summary: List all deployments
+      operationId: listDeployments
+      parameters:
+        - name: clusterId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, failed, scaling, updating]
+      responses:
+        '200':
+          description: List of deployments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Deployment'
+    post:
+      summary: Create a new deployment
+      operationId: createDeployment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - clusterId
+                - template
+              properties:
+                name:
+                  type: string
+                clusterId:
+                  type: string
+                  format: uuid
+                template:
+                  type: string
+                namespace:
+                  type: string
+                  default: default
+                replicas:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                parameters:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '201':
+          description: Deployment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deployment'
+
+  /metrics:
+    get:
+      summary: Get system metrics
+      operationId: getMetrics
+      parameters:
+        - name: resource
+          in: query
+          schema:
+            type: string
+            enum: [cluster, deployment, cost]
+        - name: timeRange
+          in: query
+          schema:
+            type: string
+            enum: [1h, 6h, 24h, 7d, 30d]
+            default: 24h
+      responses:
+        '200':
+          description: Metrics data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timeRange:
+                    type: string
+                  dataPoints:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          type: string
+                          format: date-time
+                        value:
+                          type: number
+                        labels:
+                          type: object
+                          additionalProperties: true

@@ -1,0 +1,30 @@
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: app-deployment
+  namespace: app-namespace
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: app-deployment
+  service:
+    port: 80
+  analysis:
+    interval: 30s
+    threshold: 10
+    maxWeight: 50
+    stepWeight: 5
+    metrics:
+    - name: request-success-rate
+      threshold: 99
+      interval: 1m
+    - name: request-duration
+      threshold: 500
+      interval: 1m
+    webhooks:
+      - name: load-test
+        url: http://load-tester.test/
+        timeout: 5s
+        metadata:
+          cmd: "hey -z 1m -q 10 -c 2 http://app-canary.app-namespace:80/"

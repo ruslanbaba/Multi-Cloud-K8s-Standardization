@@ -1,0 +1,163 @@
+# Default values for multi-cloud-app
+# This is a YAML-formatted file.
+
+monitoring:
+  enabled: true
+  prometheus:
+    retention: 15d
+    resources:
+      requests:
+        cpu: 1
+        memory: 2Gi
+      limits:
+        cpu: 2
+        memory: 4Gi
+    storage:
+      size: 100Gi
+    alertmanager:
+      enabled: true
+      slack_api_url: ""
+      pagerduty_url: ""
+  grafana:
+    adminPassword: ""
+    persistence:
+      enabled: true
+      size: 10Gi
+    dashboards:
+      default: true
+    plugins:
+      - grafana-piechart-panel
+      - grafana-clock-panel
+
+logging:
+  enabled: true
+  elasticsearch:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 1
+        memory: 2Gi
+      limits:
+        cpu: 2
+        memory: 4Gi
+    storage:
+      size: 100Gi
+  fluentd:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+  kibana:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1
+        memory: 2Gi
+
+serviceMesh:
+  enabled: true
+  istio:
+    components:
+      pilot:
+        enabled: true
+      egressGateways:
+        enabled: true
+      ingressGateways:
+        enabled: true
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      mtls:
+        enabled: true
+
+application:
+  replicaCount: 3
+  image:
+    repository: nginx
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+  
+  nodeSelector: {}
+  tolerations: []
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app
+              operator: In
+              values:
+              - multi-cloud-app
+          topologyKey: kubernetes.io/hostname
+
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      kubernetes.io/ingress.class: nginx
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    hosts:
+      - host: chart-example.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: chart-example-tls
+        hosts:
+          - chart-example.local
+
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    storageClass: ""
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+    capabilities:
+      drop:
+        - ALL
+
+  networkPolicy:
+    enabled: true
+    ingressRules:
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                name: ingress-nginx
+    egressRules:
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                name: monitoring
+          - namespaceSelector:
+              matchLabels:
+                name: logging
