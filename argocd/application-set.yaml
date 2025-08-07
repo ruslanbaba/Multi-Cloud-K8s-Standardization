@@ -1,0 +1,47 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: multi-cloud-k8s-apps
+spec:
+  generators:
+  - matrix:
+      generators:
+      - list:
+          elements:
+          - environment: dev
+            values: environments/values-dev.yaml
+          - environment: qa
+            values: environments/values-qa.yaml
+          - environment: staging
+            values: environments/values-staging.yaml
+          - environment: prod
+            values: environments/values-prod.yaml
+      - list:
+          elements:
+          - version: v1.0.0
+            track: stable
+          - version: v1.1.0
+            track: stable
+          - version: v1.2.0-beta
+            track: beta
+  template:
+    metadata:
+      name: '{{environment}}-{{track}}'
+    spec:
+      project: multi-cloud-k8s
+      source:
+        repoURL: https://github.com/ruslanbaba/Multi-Cloud-K8s-Standardization.git
+        targetRevision: '{{version}}'
+        path: helm
+        helm:
+          valueFiles:
+          - '{{values}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{environment}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
