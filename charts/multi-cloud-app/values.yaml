@@ -18,8 +18,14 @@ monitoring:
       enabled: true
       slack_api_url: ""
       pagerduty_url: ""
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      fsGroup: 65534
   grafana:
-    adminPassword: ""
+    adminPassword:
+      secretName: grafana-admin-secret
+      secretKey: admin-password
     persistence:
       enabled: true
       size: 10Gi
@@ -28,6 +34,10 @@ monitoring:
     plugins:
       - grafana-piechart-panel
       - grafana-clock-panel
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 472
+      fsGroup: 472
 
 logging:
   enabled: true
@@ -42,6 +52,9 @@ logging:
         memory: 4Gi
     storage:
       size: 100Gi
+    securityContext:
+      runAsUser: 1000
+      fsGroup: 1000
   fluentd:
     resources:
       requests:
@@ -50,6 +63,9 @@ logging:
       limits:
         cpu: 500m
         memory: 1Gi
+    securityContext:
+      runAsUser: 100
+      fsGroup: 101
   kibana:
     resources:
       requests:
@@ -58,6 +74,9 @@ logging:
       limits:
         cpu: 1
         memory: 2Gi
+    securityContext:
+      runAsUser: 1000
+      fsGroup: 1000
 
 serviceMesh:
   enabled: true
@@ -80,13 +99,16 @@ serviceMesh:
             memory: 256Mi
       mtls:
         enabled: true
+        mode: STRICT
+      meshPolicy:
+        mtlsMode: STRICT
 
 application:
   replicaCount: 3
   image:
     repository: nginx
-    tag: latest
-    pullPolicy: Always
+    tag: "1.23.3-alpine"
+    pullPolicy: IfNotPresent
   resources:
     requests:
       cpu: 100m
@@ -122,6 +144,9 @@ application:
     annotations:
       kubernetes.io/ingress.class: nginx
       nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      nginx.ingress.kubernetes.io/rate-limit: "100"
     hosts:
       - host: chart-example.local
         paths:
@@ -141,23 +166,70 @@ application:
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
+    runAsGroup: 1000
     fsGroup: 2000
     capabilities:
       drop:
         - ALL
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
 
   networkPolicy:
     enabled: true
+    policyTypes:
+      - Ingress
+      - Egress
     ingressRules:
       - from:
           - namespaceSelector:
               matchLabels:
                 name: ingress-nginx
+        ports:
+          - protocol: TCP
+            port: 80
     egressRules:
       - to:
           - namespaceSelector:
               matchLabels:
                 name: monitoring
+        ports:
+          - protocol: TCP
+            port: 9090
+      - to:
           - namespaceSelector:
               matchLabels:
                 name: logging
+        ports:
+          - protocol: TCP
+            port: 9200
+
+# Security enhancements
+security:
+  podSecurityPolicy:
+    enabled: true
+  networkPolicies:
+    enabled: true
+    defaultDeny: true
+  falco:
+    enabled: true
+    rules:
+      - privilege_escalation
+      - suspicious_network_activity
+      - file_integrity_monitoring
+
+# Certificate management
+certificates:
+  enabled: true
+  certManager:
+    enabled: true
+    clusterIssuer: letsencrypt-prod
+    autoRotation: true
+    renewBefore: 720h # 30 days
+
+# Backup and disaster recovery
+backup:
+  enabled: true
+  velero:
+    enabled: true
+    schedule: "0 1 * * *"
+    retention: "720h" # 30 days
