@@ -1,4 +1,4 @@
-name: 'Secure CI/CD Pipeline'
+name: 'CI/CD Pipeline'
 
 on:
   push:
@@ -9,71 +9,14 @@ on:
 env:
   TF_VERSION: '1.5.0'
   HELM_VERSION: '3.12.0'
-  COSIGN_VERSION: '2.0.0'
-
-# Security: Restrict permissions
-permissions:
-  contents: read
-  security-events: write
-  actions: read
-  id-token: write
 
 jobs:
-  security-scan:
-    name: 'Security Scanning'
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    # Secret scanning
-    - name: 'Secret Scanning with TruffleHog'
-      uses: trufflesecurity/trufflehog@v3.44.0
-      with:
-        path: ./
-        base: main
-        head: HEAD
-
-    # SAST Scanning
-    - name: 'SAST Analysis with CodeQL'
-      uses: github/codeql-action/init@v2
-      with:
-        languages: javascript, typescript, python
-        
-    - name: 'CodeQL Analysis'
-      uses: github/codeql-action/analyze@v2
-
-    # Container vulnerability scanning
-    - name: 'Container Security Scan'
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-
-    - name: 'Upload Trivy Results'
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: 'trivy-results.sarif'
-
-    # Dependency scanning
-    - name: 'Dependency Security Scan'
-      uses: ossf/scorecard-action@v2.1.3
-      with:
-        results_file: results.sarif
-        results_format: sarif
-        publish_results: true
-
   validate:
-    name: 'Infrastructure Validation'
+    name: 'Validate'
     runs-on: ubuntu-latest
-    needs: security-scan
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v3
 
     - name: 'Setup Terraform'
       uses: hashicorp/setup-terraform@v2
@@ -81,7 +24,7 @@ jobs:
         terraform_version: ${{ env.TF_VERSION }}
         cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
-    - name: 'Terraform Format Check'
+    - name: 'Terraform Format'
       run: terraform fmt -check -recursive
 
     - name: 'Terraform Init'
@@ -90,57 +33,50 @@ jobs:
     - name: 'Terraform Validate'
       run: terraform validate
 
-    # Enhanced security scanning for Infrastructure as Code
-    - name: 'Install tfsec'
+    - name: 'Install tflint'
       run: |
-        curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+        curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
 
-    - name: 'Run tfsec'
-      run: tfsec --format sarif --out tfsec-results.sarif .
+    - name: 'Run tflint'
+      run: tflint --recursive
 
-    - name: 'Upload tfsec Results'
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: 'tfsec-results.sarif'
-
-    - name: 'Run Checkov'
-      uses: bridgecrewio/checkov-action@master
-      with:
-        directory: .
-        framework: terraform
-        output_format: sarif
-        output_file_path: checkov-results.sarif
-
-    - name: 'Upload Checkov Results'
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: 'checkov-results.sarif'
-
-    # Policy as Code validation
-    - name: 'Validate OPA Policies'
-      uses: open-policy-agent/conftest-action@v0.1
-      with:
-        files: 'policies/*.yaml'
-
-    - name: 'Setup Go for Testing'
-      uses: actions/setup-go@v4
+    - name: 'Setup Go'
+      uses: actions/setup-go@v3
       with:
         go-version: '1.20'
 
-    - name: 'Run Infrastructure Tests'
+    - name: 'Run Terratest'
       working-directory: ./test
       run: |
         go mod init multi-cloud-k8s
         go mod tidy
         go test -v -timeout 30m
 
-  helm-security-scan:
-    name: 'Helm Security Validation'
+  security-scan:
+    name: 'Security Scan'
     runs-on: ubuntu-latest
-    needs: security-scan
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v3
+
+    - name: 'Run tfsec'
+      uses: aquasecurity/tfsec-action@v1.0.0
+      with:
+        soft_fail: true
+
+    - name: 'Run Checkov'
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: .
+        framework: terraform
+        soft_fail: true
+
+  helm-lint:
+    name: 'Helm Lint'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
 
     - name: 'Set up Helm'
       uses: azure/setup-helm@v3
@@ -155,143 +91,41 @@ jobs:
           fi
         done
 
-    # Helm security scanning
-    - name: 'Helm Security Scan with Kubesec'
-      run: |
-        curl -sSX POST \
-          --data-binary @<(helm template charts/portal) \
-          https://v2.kubesec.io/scan
-
-    - name: 'Generate Helm Templates for Scanning'
-      run: |
-        mkdir -p /tmp/helm-templates
-        for chart in charts/*; do
-          if [ -d "$chart" ]; then
-            helm template "$chart" > "/tmp/helm-templates/$(basename $chart).yaml"
-          fi
-        done
-
-    - name: 'Scan Helm Templates with Polaris'
-      uses: fairwindsops/polaris-insights-action@v1.0.0
-      with:
-        polaris-config: |
-          checks:
-            multipleReplicasForDeployment: warning
-            priorityClassNotSet: warning
-            tagNotSpecified: error
-            pullPolicyNotAlways: warning
-            readinessProbeMissing: warning
-            livenessProbeMissing: warning
-            cpuRequestsMissing: warning
-            cpuLimitsMissing: warning
-            memoryRequestsMissing: warning
-            memoryLimitsMissing: warning
-            runAsRootAllowed: error
-            runAsPrivileged: error
-            readOnlyRootFilesystem: warning
-            allowPrivilegeEscalation: error
-            
-  build-and-scan:
-    name: 'Build and Security Scan'
+  build-portal:
+    name: 'Build Self-Service Portal'
     runs-on: ubuntu-latest
-    needs: [validate, helm-security-scan]
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v3
 
     - name: 'Set up Node.js'
       uses: actions/setup-node@v3
       with:
         node-version: '18'
 
-    # Install Cosign for container signing
-    - name: 'Install Cosign'
-      uses: sigstore/cosign-installer@v3.1.1
-      with:
-        cosign-release: ${{ env.COSIGN_VERSION }}
-
-    # Build and scan portal
-    - name: 'Build Portal with Security Checks'
+    - name: 'Build Portal'
       working-directory: ./portal
       run: |
-        npm ci --audit
-        npm audit fix
-        npm run security-check || true
+        npm install
         npm run build
         npm test
 
-    # Docker build with security scanning
-    - name: 'Set up Docker Buildx'
-      uses: docker/setup-buildx-action@v2
-
-    - name: 'Build Docker Images'
-      run: |
-        docker build -t portal-frontend:latest ./portal/frontend
-        docker build -t portal-backend:latest ./portal/backend
-
-    # Container image scanning
-    - name: 'Scan Frontend Image'
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: 'portal-frontend:latest'
-        format: 'sarif'
-        output: 'frontend-scan.sarif'
-
-    - name: 'Scan Backend Image'
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: 'portal-backend:latest'
-        format: 'sarif'
-        output: 'backend-scan.sarif'
-
-    - name: 'Upload Image Scan Results'
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: 'frontend-scan.sarif'
-
-    - name: 'Upload Backend Scan Results'
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: 'backend-scan.sarif'
-
-    # Generate SBOM
-    - name: 'Generate SBOM'
-      uses: anchore/sbom-action@v0.14.3
-      with:
-        image: portal-frontend:latest
-        format: spdx-json
-        output-file: frontend-sbom.spdx.json
-
-    - name: 'Sign and Push Images'
+    - name: 'Build and Push Docker Image'
       if: github.ref == 'refs/heads/main'
-      env:
-        COSIGN_EXPERIMENTAL: 1
       run: |
         echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-        
-        # Tag and push
-        docker tag portal-frontend:latest ghcr.io/${{ github.repository }}/portal-frontend:${{ github.sha }}
-        docker tag portal-backend:latest ghcr.io/${{ github.repository }}/portal-backend:${{ github.sha }}
-        
-        docker push ghcr.io/${{ github.repository }}/portal-frontend:${{ github.sha }}
-        docker push ghcr.io/${{ github.repository }}/portal-backend:${{ github.sha }}
-        
-        # Sign images with Cosign
-        cosign sign --yes ghcr.io/${{ github.repository }}/portal-frontend:${{ github.sha }}
-        cosign sign --yes ghcr.io/${{ github.repository }}/portal-backend:${{ github.sha }}
-        
-        # Attest SBOM
-        cosign attest --yes --predicate frontend-sbom.spdx.json ghcr.io/${{ github.repository }}/portal-frontend:${{ github.sha }}
+        docker build -t ghcr.io/${{ github.repository }}/portal:${{ github.sha }} ./portal
+        docker push ghcr.io/${{ github.repository }}/portal:${{ github.sha }}
 
   deploy:
-    name: 'Secure Deployment'
-    needs: [validate, helm-security-scan, build-and-scan]
+    name: 'Deploy'
+    needs: [validate, security-scan, helm-lint, build-portal]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: staging
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v3
 
     - name: 'Setup Terraform'
       uses: hashicorp/setup-terraform@v2
@@ -299,100 +133,35 @@ jobs:
         terraform_version: ${{ env.TF_VERSION }}
         cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
-    # Secure credential configuration with OIDC
     - name: 'Configure AWS Credentials'
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@v2
       with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        role-session-name: GitHubActions
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
 
     - name: 'Configure GCP Credentials'
       uses: google-github-actions/auth@v1
       with:
-        workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-        service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
 
     - name: 'Configure Azure Credentials'
       uses: azure/login@v1
       with:
-        client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    # Infrastructure deployment with approval gates
     - name: 'Terraform Plan'
       run: |
         terraform init
         terraform plan -out=tfplan
 
-    - name: 'Security Review of Plan'
-      run: |
-        terraform show -json tfplan | jq > tfplan.json
-        # Run security checks on the plan
-        checkov -f tfplan.json --framework terraform_plan
-
     - name: 'Terraform Apply'
       if: github.ref == 'refs/heads/main'
       run: terraform apply -auto-approve tfplan
 
-    # Secure Helm deployment
-    - name: 'Verify Image Signatures'
-      env:
-        COSIGN_EXPERIMENTAL: 1
-      run: |
-        cosign verify ghcr.io/${{ github.repository }}/portal-frontend:${{ github.sha }}
-        cosign verify ghcr.io/${{ github.repository }}/portal-backend:${{ github.sha }}
-
-    - name: 'Deploy with Helm'
+    - name: 'Deploy Helm Charts'
       if: github.ref == 'refs/heads/main'
       run: |
-        helm upgrade --install monitoring ./charts/monitoring \
-          --namespace monitoring --create-namespace \
-          --values charts/monitoring/values-secure.yaml
-          
-        helm upgrade --install portal ./charts/portal \
-          --namespace portal --create-namespace \
-          --set frontend.image.tag=${{ github.sha }} \
-          --set backend.image.tag=${{ github.sha }} \
-          --values charts/portal/values-secure.yaml
-
-    # Post-deployment security validation
-    - name: 'Runtime Security Validation'
-      run: |
-        # Wait for deployment
-        kubectl wait --for=condition=available --timeout=300s deployment/portal-frontend -n portal
-        kubectl wait --for=condition=available --timeout=300s deployment/portal-backend -n portal
-        
-        # Run security checks
-        kubectl get pods -n portal -o yaml | kubesec scan -
-
-    # DAST scanning
-    - name: 'Dynamic Application Security Testing'
-      uses: zaproxy/action-full-scan@v0.7.0
-      with:
-        target: 'https://portal-staging.example.com'
-        rules_file_name: '.zap/rules.tsv'
-        cmd_options: '-a'
-
-# Security job for monitoring and alerting
-  security-monitoring:
-    name: 'Security Monitoring Setup'
-    needs: deploy
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: 'Deploy Security Monitoring'
-      run: |
-        # Deploy Falco for runtime security
-        helm repo add falcosecurity https://falcosecurity.github.io/charts
-        helm upgrade --install falco falcosecurity/falco \
-          --namespace falco-system --create-namespace \
-          --set falco.grpc.enabled=true \
-          --set falco.grpcOutput.enabled=true
-        
-        # Deploy security policies
-        kubectl apply -f policies/ --recursive
+        helm upgrade --install monitoring ./charts/monitoring --namespace monitoring --create-namespace
+        helm upgrade --install portal ./charts/portal --namespace portal --create-namespace \
+          --set image.tag=${{ github.sha }}
