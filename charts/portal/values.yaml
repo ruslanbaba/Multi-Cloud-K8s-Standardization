@@ -3,20 +3,17 @@ frontend:
   replicaCount: 2
   image:
     repository: ghcr.io/ruslanbaba/multi-cloud-k8s-standardization/portal-frontend
-    tag: "v1.2.3"
-    pullPolicy: IfNotPresent
+    tag: latest
+    pullPolicy: Always
   service:
     type: ClusterIP
-    port: 8080
+    port: 80
   ingress:
     enabled: true
     className: nginx
     annotations:
       kubernetes.io/ingress.class: nginx
       nginx.ingress.kubernetes.io/ssl-redirect: "true"
-      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-      nginx.ingress.kubernetes.io/secure-backends: "true"
-      cert-manager.io/cluster-issuer: "letsencrypt-prod"
     hosts:
       - host: portal.example.com
         paths:
@@ -33,23 +30,13 @@ frontend:
     limits:
       cpu: 200m
       memory: 256Mi
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 101
-    runAsGroup: 101
-    fsGroup: 101
-    capabilities:
-      drop:
-        - ALL
-    readOnlyRootFilesystem: true
-    allowPrivilegeEscalation: false
 
 backend:
   replicaCount: 2
   image:
     repository: ghcr.io/ruslanbaba/multi-cloud-k8s-standardization/portal-backend
-    tag: "v1.2.3"
-    pullPolicy: IfNotPresent
+    tag: latest
+    pullPolicy: Always
   service:
     type: ClusterIP
     port: 3000
@@ -58,8 +45,6 @@ backend:
       value: production
     - name: PORT
       value: "3000"
-    - name: TLS_REJECT_UNAUTHORIZED
-      value: "1"
   resources:
     requests:
       cpu: 200m
@@ -67,16 +52,6 @@ backend:
     limits:
       cpu: 400m
       memory: 512Mi
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1001
-    runAsGroup: 1001
-    fsGroup: 1001
-    capabilities:
-      drop:
-        - ALL
-    readOnlyRootFilesystem: true
-    allowPrivilegeEscalation: false
   
   secretRefs:
     - name: portal-secrets
@@ -92,16 +67,6 @@ redis:
   architecture: standalone
   auth:
     enabled: true
-    password: "" # Will be generated
-  master:
-    persistence:
-      enabled: true
-      size: 8Gi
-    securityContext:
-      enabled: true
-      runAsUser: 1001
-      runAsGroup: 1001
-      fsGroup: 1001
   resources:
     requests:
       cpu: 100m
@@ -109,139 +74,19 @@ redis:
     limits:
       cpu: 200m
       memory: 256Mi
-  networkPolicy:
-    enabled: true
 
 networkPolicy:
   enabled: true
-  policyTypes:
-    - Ingress
-    - Egress
   ingressRules:
     - from:
         - namespaceSelector:
             matchLabels:
               name: ingress-nginx
-      ports:
-        - protocol: TCP
-          port: 8080
-        - protocol: TCP
-          port: 3000
-  egressRules:
-    - to: []
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 53
-        - protocol: UDP
-          port: 53
-
-podSecurityPolicy:
-  enabled: true
-  allowPrivilegeEscalation: false
-  requiredDropCapabilities:
-    - ALL
-  runAsUser:
-    rule: MustRunAsNonRoot
-  seLinux:
-    rule: RunAsAny
-  fsGroup:
-    rule: RunAsAny
 
 monitoring:
   enabled: true
   serviceMonitor:
     enabled: true
     interval: 15s
-    scrapeTimeout: 10s
   grafanaDashboard:
     enabled: true
-
-# Certificate management
-certificates:
-  enabled: true
-  issuer: letsencrypt-prod
-  duration: 2160h # 90 days
-  renewBefore: 360h # 15 days
-  organization: "Multi-Cloud Portal"
-
-# Enhanced Secret Management
-secrets:
-  # HashiCorp Vault integration
-  vault:
-    enabled: true
-    address: "https://vault.example.com"
-    role: "portal-role"
-    authMethod: "kubernetes"
-    secrets:
-      database:
-        enabled: true
-        path: "database/creds/portal-db-role"
-      kv:
-        enabled: true
-        path: "secret/portal"
-        keys:
-          - jwt-secret
-          - oauth-client-secret
-  
-  # Sealed Secrets for GitOps
-  sealedSecrets:
-    enabled: true
-    controllerName: "sealed-secrets-controller"
-    controllerNamespace: "kube-system"
-    # These should be sealed using kubeseal
-    jwtSecret: "AgBy3i4OJSWK+PiTySYZZA9rO43cGDEQAx..."
-    oauthClientSecret: "AgBy3i4OJSWK+PiTySYZZA9rO43cGDEQAx..."
-  
-  # External Secrets Operator
-  externalSecrets:
-    enabled: true
-    secretStore: "vault-secret-store"
-    refreshInterval: "15s"
-    backend: "vault"
-    vaultUrl: "https://vault.example.com"
-  
-  # Cert-manager integration
-  certManager:
-    enabled: true
-    issuer: "letsencrypt-prod"
-    dnsNames:
-      - "portal.example.com"
-      - "api.portal.example.com"
-  
-  # Automatic secret rotation
-  rotation:
-    enabled: true
-    schedule: "0 0 */30 * *" # Every 30 days
-    databases:
-      enabled: true
-    certificates:
-      enabled: true
-      renewBefore: "720h" # 30 days
-    tokens:
-      enabled: true
-      lifetime: "24h"
-
-# Security Context Constraints
-securityContext:
-  pod:
-    runAsNonRoot: true
-    runAsUser: 1001
-    runAsGroup: 1001
-    fsGroup: 1001
-    seccompProfile:
-      type: RuntimeDefault
-  container:
-    allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: true
-    capabilities:
-      drop:
-        - ALL
-    resources:
-      limits:
-        memory: "512Mi"
-        cpu: "500m"
-      requests:
-        memory: "256Mi"
-        cpu: "200m"

@@ -30,17 +30,8 @@ locals {
       }
       security = {
         mfa_required = false
-        ip_whitelist = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+        ip_whitelist = ["0.0.0.0/0"]
         audit_level = "WRITE_ONLY"
-        network_policies = {
-          default_deny = true
-          allowed_namespaces = ["kube-system", "monitoring", "logging"]
-        }
-        pod_security = {
-          enforce_non_root = true
-          read_only_filesystem = true
-          drop_capabilities = ["ALL"]
-        }
       }
     }
     staging = {
@@ -71,19 +62,8 @@ locals {
       }
       security = {
         mfa_required = true
-        ip_whitelist = ["10.0.0.0/8", "172.16.0.0/12"]
+        ip_whitelist = ["10.0.0.0/8"]
         audit_level = "ALL"
-        network_policies = {
-          default_deny = true
-          allowed_namespaces = ["kube-system", "monitoring", "logging"]
-          egress_restrictions = true
-        }
-        pod_security = {
-          enforce_non_root = true
-          read_only_filesystem = true
-          drop_capabilities = ["ALL"]
-          seccomp_profile = "runtime/default"
-        }
       }
     }
     prod = {
@@ -116,24 +96,6 @@ locals {
         mfa_required = true
         ip_whitelist = ["10.0.0.0/8"]
         audit_level = "ALL"
-        network_policies = {
-          default_deny = true
-          allowed_namespaces = ["kube-system", "monitoring", "logging"]
-          egress_restrictions = true
-          micro_segmentation = true
-        }
-        pod_security = {
-          enforce_non_root = true
-          read_only_filesystem = true
-          drop_capabilities = ["ALL"]
-          seccomp_profile = "runtime/default"
-          selinux_enabled = true
-        }
-        runtime_security = {
-          falco_enabled = true
-          syscall_monitoring = true
-          file_integrity_monitoring = true
-        }
       }
     }
   }
@@ -165,19 +127,11 @@ locals {
         enabled = true
         routes = ["10.0.0.0/8"]
         allowed_services = ["monitoring", "logging", "backup"]
-        encryption_in_transit = true
       }
       transit_gateway = {
         enabled = true
         bandwidth = "1Gbps"
         route_propagation = true
-        encryption = true
-      }
-      zero_trust = {
-        enabled = true
-        mutual_tls = true
-        identity_verification = true
-        continuous_validation = true
       }
     }
   }
@@ -192,8 +146,6 @@ locals {
         audit_logging = true
         access_control = true
         network_segmentation = true
-        vulnerability_scanning = true
-        penetration_testing = true
       }
       scanning_schedule = "0 0 * * *"
       report_retention = "365d"
@@ -205,8 +157,6 @@ locals {
         access_auditing = true
         backup_encryption = true
         disaster_recovery = true
-        access_controls = true
-        audit_trails = true
       }
       audit_retention = "6y"
     }
@@ -217,8 +167,6 @@ locals {
         data_lifecycle = true
         right_to_forget = true
         data_portability = true
-        consent_management = true
-        breach_notification = true
       }
       data_retention = {
         logs = "90d"
@@ -292,19 +240,12 @@ locals {
           max_ttl = "1h"
           cache_key_parameters = ["user_id", "device_id"]
         }
-        security = {
-          oauth2_enabled = true
-          jwt_validation = true
-          api_key_rotation = "30d"
-          rate_limiting_by_user = true
-        }
       }
       offline_support = {
         enabled = true
         sync_interval = "15m"
         conflict_resolution = "last_write_wins"
         max_offline_storage = "100MB"
-        encryption = true
       }
       performance = {
         image_optimization = {
@@ -317,7 +258,6 @@ locals {
           prefetching = true
           compression = true
           connection_pooling = true
-          http2_enabled = true
         }
       }
     }
@@ -337,23 +277,17 @@ locals {
           report_only = false
           directives = {
             default_src = ["'self'"]
-            script_src = ["'self'"]
+            script_src = ["'self'", "'unsafe-inline'"]
             style_src = ["'self'", "'unsafe-inline'"]
             img_src = ["'self'", "data:", "https:"]
-            connect_src = ["'self'"]
-            font_src = ["'self'"]
-            object_src = ["'none'"]
-            frame_ancestors = ["'none'"]
           }
         }
         authentication = {
           oauth_providers = ["google", "github", "azure_ad"]
-          mfa_required = true
           session_management = {
             max_age = "24h"
             refresh_threshold = "1h"
             idle_timeout = "30m"
-            secure_cookies = true
           }
         }
       }
